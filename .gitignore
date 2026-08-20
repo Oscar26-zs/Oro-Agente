@@ -1,1 +1,8 @@
-# Archivos y carpetas que Git debe ignorar (entornos virtuales, .env, cachés, etc.)
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+*.egg-info/
+.mypy_cache/

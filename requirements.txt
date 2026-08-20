@@ -1,1 +1,7 @@
-# Lista de dependencias del proyecto.
+smolagents[toolkit]
+openai
+fastapi
+uvicorn[standard]
+requests
+python-dotenv
+pytest
