@@ -1,16 +1,14 @@
 # Oro-Agente 🏖️
 
-Servicio Python que expone, vía FastAPI, un chat de asistente de vacaciones impulsado por **dos agentes de IA** orquestados entre sí. Este repositorio contiene **únicamente la capa de agentes**: el sistema de solicitud de vacaciones (interfaz de usuario y API REST) vive en un **repositorio aparte** (C# MVC), y este servicio se limita a consumirlo vía HTTP.
+Servicio Python que expone, vía FastAPI, un chat de asistente de vacaciones. Este repositorio contiene **únicamente la capa de agentes**: el sistema de solicitud de vacaciones (interfaz de usuario y API REST) vive en un **repositorio aparte** (C# MVC), y este servicio se limita a consumirlo vía HTTP.
+
+Las tareas de investigación de viajes (clima, vuelos, hoteles, actividades) no son responsabilidad de este equipo: las cubre otro equipo de desarrolladores.
 
 ## 📋 Descripción General
 
-El flujo completo funciona así:
-
 1. El empleado escribe en el chat algo como *"Quiero tomar vacaciones del 10 al 15 de septiembre yendo a Panamá"*.
-2. El **Agente de Solicitudes** crea esa solicitud llamando a la API externa del sistema de vacaciones (otro repositorio) y consulta su estado.
-3. El **Orquestador** solo avanza al siguiente paso si la solicitud está **aprobada**.
-4. El **Agente de Viaje** busca información del destino (clima, vuelos, hoteles, actividades).
-5. El orquestador devuelve un resumen consolidado al empleado dentro del mismo chat.
+2. Este servicio interpreta el mensaje, crea la solicitud llamando a la API externa del sistema de vacaciones (otro repositorio) o consulta su estado.
+3. El orquestador devuelve la respuesta al empleado dentro del mismo chat.
 
 ## 🗂️ Repositorios relacionados
 
@@ -31,15 +29,8 @@ Gestiona la solicitud de vacaciones consumiendo la API externa del sistema C# MV
 - Consultar el estado de la solicitud vía `GET /api/vacaciones/{id}/estado`.
 - Nunca accede a datos de vacaciones directamente: todo pasa por el cliente HTTP hacia el otro repositorio.
 
-### 2. Agente de Viaje (`agente_viaje`)
-Investiga información del destino una vez que la solicitud está aprobada.
-
-**Responsabilidades:**
-- Buscar clima, vuelos, hoteles y actividades para el destino y fechas indicados.
-- Usa APIs externas o búsqueda web (pendiente de definir cuáles).
-
 ### Orquestador
-Coordina a ambos agentes y aplica la regla de negocio central: **solo llama al Agente de Viaje si el estado de la solicitud es "aprobada"**.
+Recibe el mensaje del empleado y lo delega al Agente de Solicitudes, devolviendo el resultado al chat.
 
 ## 🔄 Flujo de Trabajo
 
@@ -53,20 +44,14 @@ Empleado (chat)
 [agente_solicitudes] ── crea/consulta solicitud ──▶ API externa (repo C# MVC)
    │
    ▼
-¿Estado == "aprobada"?
-   │ sí
-   ▼
-[agente_viaje] ── busca clima/vuelos/hoteles/actividades ──▶ APIs externas
-   │
-   ▼
-Resumen consolidado → respuesta en el chat
+Respuesta → chat
 ```
 
 ## 🛠️ Tecnologías
 
 - **Lenguaje:** Python
 - **API del servicio:** FastAPI
-- **Framework de agentes / modelo de IA:** aún por definir (la interfaz de cada agente queda desacoplada para poder conectar cualquier framework después, ej. smolagents, LangChain, CrewAI)
+- **Framework de agentes / modelo de IA:** smolagents (modelo con reintentos y fallback contra OpenRouter)
 - **Comunicación con el sistema de vacaciones:** HTTP/JSON contra la API del otro repositorio
 
 ## 📁 Estructura del Proyecto
@@ -77,16 +62,13 @@ oro-agente-service/
 │   ├── main.py                      # Punto de entrada de la app FastAPI; expone POST /chat
 │   ├── config.py                    # Carga de variables de entorno (.env)
 │   ├── orchestrator/
-│   │   └── orchestrator.py          # Orquesta agente_solicitudes y agente_viaje; aplica la regla de "solo si está aprobada"
+│   │   └── orchestrator.py          # Orquesta el flujo de solicitudes de vacaciones
 │   ├── agents/
 │   │   ├── base_agent.py            # Interfaz común que deben implementar todos los agentes (run(input) -> output)
-│   │   ├── solicitudes/
-│   │   │   ├── agent.py             # Definición del agente_solicitudes
-│   │   │   ├── tools.py             # Tools del agente: crear solicitud, consultar estado (vía API externa)
-│   │   │   └── schemas.py           # Modelos de entrada/salida de este agente
-│   │   └── viaje/
-│   │       ├── agent.py             # Definición del agente_viaje
-│   │       ├── tools.py             # Tools del agente: buscar clima, vuelos, hoteles, actividades
+│   │   ├── llm.py                   # Modelo robusto de IA (smolagents) con reintentos y fallback
+│   │   └── solicitudes/
+│   │       ├── agent.py             # Definición del agente_solicitudes
+│   │       ├── tools.py             # Tools del agente: crear solicitud, consultar estado (vía API externa)
 │   │       └── schemas.py           # Modelos de entrada/salida de este agente
 │   ├── clients/
 │   │   └── vacaciones_api_client.py # Cliente HTTP que consume la API del repositorio C# MVC (no la implementa)
@@ -96,9 +78,8 @@ oro-agente-service/
 │       └── logger.py                # Configuración de logging compartida por agentes y orquestador
 ├── tests/
 │   ├── test_orchestrator.py
-│   ├── test_agente_solicitudes.py
-│   └── test_agente_viaje.py
-├── .env.example                     # Variables: BASE_URL_VACACIONES_API, MODEL_PROVIDER, WEATHER_API_KEY, etc.
+│   └── test_agente_solicitudes.py
+├── .env.example                     # Variables: BASE_URL_VACACIONES_API, MODEL_*, HOST, PORT
 ├── requirements.txt
 ├── README.md
 └── .gitignore
@@ -122,15 +103,16 @@ Crear un archivo `.env` a partir de `.env.example`:
 
 ```env
 BASE_URL_VACACIONES_API=http://localhost:5000   # URL del sistema C# MVC (otro repositorio)
-MODEL_PROVIDER=                                   # Pendiente de definir
+USE_MOCK_VACACIONES_API=true                     # true = respuestas simuladas
 MODEL_API_KEY=
-WEATHER_API_KEY=
+MODEL_BASE_URL=https://openrouter.ai/api/v1
+MODEL_NAME=tu-modelo
 ```
 
 ## ▶️ Uso
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8001
+python -m app.main   # o: uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 El sistema C# MVC (otro repositorio) consumirá el endpoint `POST /chat` de este servicio.
@@ -145,14 +127,3 @@ GET  /api/vacaciones/{solicitudId}/estado
 ```
 
 > ⚠️ Si esos endpoints cambian de forma o de ruta en el otro repositorio, hay que actualizar `vacaciones_api_client.py` en consecuencia.
-
-## 🗺️ Pendientes / Decisiones abiertas
-
-- Definir el framework de agentes a usar (smolagents, LangChain, CrewAI, u otro).
-- Definir el modelo de IA a usar.
-- Definir las APIs externas de clima/vuelos/hoteles.
-- Decidir estrategia de espera por aprobación (polling vs. webhook).
-
-## 📄 Licencia
-
-Este proyecto se distribuye bajo la licencia que definas (MIT, Apache 2.0, etc.).

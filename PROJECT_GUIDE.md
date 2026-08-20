@@ -4,11 +4,13 @@
 
 Este proyecto es un **servicio de inteligencia artificial** que ayuda a los empleados a
 gestionar sus vacaciones. El empleado le escribe por chat (como si fuera un asistente)
-y el sistema hace dos cosas:
+y el sistema:
 
-1. **Gestiona la solicitud de vacaciones**: la crea o consulta su estado.
-2. **Investiga el destino**: si la solicitud fue aprobada, busca vuelos, hoteles, clima y
-   actividades turisticas para ese lugar.
+1. **Gestiona la solicitud de vacaciones**: la crea o consulta su estado, hablando siempre
+   con el sistema MVC.
+
+> **Nota**: la investigacion de destinos (vuelos, hoteles, clima, actividades) la cubre
+> **otro equipo de desarrolladores**; no es parte de este repositorio.
 
 Todo esto esta expuesto como un servicio web rapido (FastAPI) que corre en el puerto 8001.
 
@@ -26,7 +28,7 @@ Este sistema esta dividido en **dos partes separadas** que se comunican por HTTP
 │  - Interfaz de usuario (vistas) │  HTTP   │  - Recibe el chat del empleado  │
 │  - API REST de vacaciones       │◄───────►│  - Orquesta agentes de IA       │
 │  - Base de datos de vacaciones  │         │  - Consulta la API del MVC      │
-│  - Logica de negocio en C#      │         │  - Busca info de viaje          │
+│  - Logica de negocio en C#      │         │  - Consulta la API del MVC      │
 └─────────────────────────────────┘         └─────────────────────────────────┘
 ```
 
@@ -58,7 +60,7 @@ FASTAPI (Python) - app/main.py            ← Recibe la peticion
    ▼
 ORQUESTADOR (Python)                      ← Decide que hacer
    │
-   │  Paso 1: Llama al Agente de Solicitudes
+   │  Llama al Agente de Solicitudes
    ▼
 AGENTE SOLICITUDES (Python)               ← Analiza el mensaje
    │
@@ -80,19 +82,11 @@ VOLVEMOS HACIA ATRAS ───────────────────�
    ▼                                                                       │
 ORQUESTADOR                                                               │
    │                                                                       │
-   │  Paso 2: Como el estado es "aprobada", llama al Agente de Viaje      │
-   ▼                                                                       │
-AGENTE VIAJE (Python)                                                     │
-   │                                                                       │
-   │  Busca vuelos, hoteles, clima y actividades (APIs externas)          │
-   ▼                                                                       │
-ORQUESTADOR                                                               │
-   │                                                                       │
-   │  Junta todo en un texto resumen                                       │
+   │  Formula el texto de respuesta al empleado                           │
    ▼                                                                       │
 FASTAPI                                                                   │
    │                                                                       │
-   │  Devuelve: {"respuesta": "Solicitud #1001 aprobada... vuelos..."}     │
+   │  Devuelve: {"respuesta": "Solicitud #1001 creada con estado aprobada"}│
    ▼                                                                       │
 SISTEMA MVC (C#)                                                          │
    │                                                                       │
@@ -107,7 +101,7 @@ Esto es clave: **la respuesta viaja por HTTP de regreso por la misma conexion**.
 
 El sistema MVC hace una peticion HTTP y **espera la respuesta** (como cuando abres
 una pagina web y esperas que cargue). FastAPI recibe esa peticion, hace todo el
-trabajo (hablar con el MVC otra vez, buscar vuelos, etc.), y cuando termina
+trabajo (hablar con el MVC para crear o consultar la solicitud), y cuando termina
 **devuelve un JSON** como respuesta de esa misma peticion HTTP.
 
 Es como una llamada telefonica:
@@ -130,7 +124,7 @@ POST http://localhost:8001/chat
 Y recibir como respuesta:
 ```
 {
-  "respuesta": "Tu solicitud #1001 fue creada con estado aprobada. Aqui tienes info para Cancun..."
+  "respuesta": "Tu solicitud #1001 fue creada con estado aprobada."
 }
 ```
 
@@ -188,17 +182,11 @@ que se llenan con informacion:
 ### `app/orchestrator/orchestrator.py` - El jefe de piso
 
 Este es el cerebro que decide que hacer. Recibe el mensaje del empleado y coordina
-a los dos agentes:
+al agente de solicitudes:
 
 1. **Primero** llama al Agente de Solicitudes para crear o consultar la vacacion.
-2. **Despues** revisa el resultado:
-   - Si el estado es `"aprobada"` -> llama al Agente de Viaje para buscar info del destino.
-   - Si NO es aprobada -> solo informa al empleado que su solicitud esta pendiente.
-3. **Junta** todo en un texto resumen y lo devuelve.
-
-**Por que es importante?** Porque la regla de negocio esta aqui: "solo investigar
-el destino si la solicitud esta aprobada". Si manana cambia la regla (por ejemplo,
-investigar tambien si esta pendiente), solo se cambia aqui.
+2. **Despues** toma el resultado (id y estado de la solicitud) y arma el texto de
+   respuesta para el empleado.
 
 **Futuro**: Cuando elijamos un framework de agentes (smolagents, langchain, crewai),
 este archivo sera el que se reemplace o adapte para usar el orquestador nativo
@@ -253,37 +241,8 @@ Define que datos entra y sale de este agente:
 
 ---
 
-### `app/agents/viaje/` - Agente 2: Investigador de destinos
-
-Misma estructura que el agente anterior:
-
-#### `agent.py` - El cerebro del agente
-
-Define la clase `AgenteViaje`. Cuando recibe un destino y unas fechas:
-1. Ejecuta las 4 tools (vuelos, hoteles, clima, actividades).
-2. Junta todo en un diccionario y lo devuelve.
-
-**Futuro**: un modelo de IA decidira que buscar primero, que preguntar al empleado,
-y como presentar los resultados de forma natural.
-
-#### `tools.py` - Las herramientas
-
-Cuatro funciones que buscan informacion:
-
-- `buscar_vuelos(destino, fecha_inicio, fecha_fin)` -> busca vuelos (API externa o web)
-- `buscar_hoteles(destino, fecha_inicio, fecha_fin)` -> busca hoteles (API externa o web)
-- `buscar_clima(destino, fecha_inicio, fecha_fin)` -> busca pronostico del clima
-- `buscar_actividades(destino)` -> busca actividades turisticas
-
-**Actualmente** devuelven datos mock (falsos). **En el futuro** cada una se conectara
-a una API real (Google Flights, OpenWeatherMap, TripAdvisor, etc.).
-
-#### `schemas.py` - Los formularios
-
-- `ViajeInput` -> `destino`, `fecha_inicio`, `fecha_fin`, `empleado_id`
-- `VueloInfo` -> aerolinea, precio, origen, destino, fechas
-- `HotelInfo` -> nombre, precio_por_noche, direccion, rating
-- `ViajeOutput` -> destino, vuelos, hoteles, clima, actividades
+> **Agente de Viaje**: fuera de este repositorio. La investigacion de destinos
+> (vuelos, hoteles, clima, actividades) la desarrolla otro equipo.
 
 ---
 
@@ -320,10 +279,9 @@ Sirve para:
 
 Archivos para verificar que todo funciona:
 
-- `test_orchestrator.py` -> prueba que el orquestador coordina bien a los agentes
-  y que la regla "solo viaje si aprobada" se cumple.
+- `test_orchestrator.py` -> prueba que el orquestador invoca al agente de solicitudes
+  y arma la respuesta con el estado de la solicitud.
 - `test_agente_solicitudes.py` -> prueba que el agente crea y consulta solicitudes.
-- `test_agente_viaje.py` -> prueba que el agente ejecuta sus tools de busqueda.
 
 ---
 
@@ -392,24 +350,14 @@ empleado escribe "Quiero vacaciones del 1 al 15 de septiembre a Cancun":
 
 9. Esa respuesta viaja de regreso: MVC → VacacionesAPIClient → Agente de Solicitudes → Orquestador.
 
-10. El orquestador ve que el estado es "aprobada", asi que llama al Agente de Viaje.
+10. El orquestador arma el texto de respuesta:
+    "Tu solicitud #1001 fue creada con estado aprobada, del 1 al 15 de septiembre."
 
-11. El Agente de Viaje busca vuelos, hoteles, clima y actividades para Cancun
-    (por ahora con datos mock, en el futuro con APIs reales).
+11. Esa respuesta viaja de regreso por HTTP: Python → MVC.
 
-12. El orquestador junta TODO en un texto:
-    "Tu solicitud #1001 fue aprobada del 1 al 15 de septiembre.
-     Aqui tienes informacion para Cancun:
-     ✈ Vuelos desde $450
-     🏨 Hotel desde $120/noche
-     🌤 Clima: soleado 28°C
-     🎯 Actividades: tour gastronomico, excursion..."
+12. El sistema MVC muestra ese texto en el chat del empleado.
 
-13. Esa respuesta viaja de regreso por HTTP: Python → MVC.
-
-14. El sistema MVC muestra ese texto en el chat del empleado.
-
-15. El empleado ve su respuesta.
+13. El empleado ve su respuesta.
 ```
 
 **Todo viaja por HTTP**. No hay nada magico. Es una peticion que va y una respuesta
@@ -419,9 +367,9 @@ que viene.
 
 ## Que hace falta aun?
 
-- [ ] Implementar el codigo real en cada archivo (ahora solo tienen comentarios)
-- [ ] Elegir e integrar un framework de agentes de IA
-- [ ] Conectar el modelo de IA para interpretar mensajes del empleado
-- [ ] Conectar APIs reales para el agente de viaje (clima, vuelos, hoteles)
+- [x] Implementar el codigo real en cada archivo (agente de solicitudes, orquestador, API)
+- [x] Elegir e integrar un framework de agentes de IA (smolagents)
+- [x] Conectar el modelo de IA para interpretar mensajes del empleado
 - [ ] Conectar con el MVC real (desactivar mocks)
 - [ ] Hacer que el MVC llame a `POST /chat` y muestre la respuesta en el chat
+- [ ] (Otro equipo) Agente de viaje: APIs reales de clima, vuelos y hoteles
