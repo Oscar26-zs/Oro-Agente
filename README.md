@@ -9,11 +9,16 @@ el sistema de vacaciones C# MVC para dar soporte a un chat de empleados.
   del sistema C# MVC (`VACACIONES_API_URL`).
 - `agente_viaje`: si la solicitud está aprobada, investiga vuelos, hoteles,
   clima y actividades del destino usando búsqueda web y wttr.in.
-- Un orquestador (`CodeAgent` con `managed_agents`) decide cuándo delegar a
-  cada uno, según el estado de la solicitud.
+- La orquestación es determinística en Python (`app/orchestrator`): siempre se
+  ejecuta primero `agente_solicitudes` y solo se llama a `agente_viaje` si el
+  estado es "aprobada". Sin LLM orquestador: menos pasos y menos tokens.
 
-Modelo LLM: HuggingFace Inference API (`smolagents.InferenceClientModel`),
-configurado en `app/config.py` vía las variables `HF_TOKEN` y `HF_MODEL_ID`.
+Modelo LLM: cadena de respaldo entre proveedores con API compatible con
+OpenAI — Gemini > Groq > Cerebras > OpenRouter (modelos ":free") — configurada
+en `app/config.py` vía las variables `GEMINI_API_KEY`, `GROQ_API_KEY`,
+`CEREBRAS_API_KEY`, `OPENROUTER_API_KEY` (y `HF_TOKEN` como última opción).
+Si un proveedor agota su cuota gratuita (429), la petición salta al siguiente
+de la cadena al instante.
 
 ## Cómo levantar el servicio
 

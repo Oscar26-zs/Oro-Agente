@@ -1,6 +1,7 @@
 """Funciones que el agente usa como herramientas: buscar clima,
 vuelos, hoteles y actividades del destino."""
 
+import ast
 import json
 import re
 
@@ -30,7 +31,9 @@ class ClimaTool(Tool):
 
 def parsear_json_respuesta(texto: str) -> dict:
     """Extrae el primer objeto JSON válido de un texto, aunque el modelo
-    haya agregado explicaciones u otro texto alrededor."""
+    haya agregado explicaciones u otro texto alrededor. También acepta el
+    repr de un dict de Python (comillas simples), que es lo que produce
+    str() cuando final_answer recibió un dict en vez de un string."""
     try:
         return json.loads(texto)
     except json.JSONDecodeError:
@@ -38,9 +41,16 @@ def parsear_json_respuesta(texto: str) -> dict:
 
     coincidencia = re.search(r"\{.*\}", texto, re.DOTALL)
     if coincidencia:
+        candidato = coincidencia.group(0)
         try:
-            return json.loads(coincidencia.group(0))
+            return json.loads(candidato)
         except json.JSONDecodeError:
+            pass
+        try:
+            datos = ast.literal_eval(candidato)
+            if isinstance(datos, dict):
+                return datos
+        except (ValueError, SyntaxError):
             pass
 
     raise ValueError(f"No se pudo extraer un JSON válido de la respuesta del agente: {texto!r}")

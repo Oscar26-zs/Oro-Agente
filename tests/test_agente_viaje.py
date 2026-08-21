@@ -31,6 +31,16 @@ def test_parsear_json_respuesta_sin_json_lanza_error():
         parsear_json_respuesta("esto no tiene ningún JSON adentro")
 
 
+def test_parsear_json_respuesta_acepta_repr_de_dict_python():
+    texto = (
+        "{'solicitudId': 'a1b2c3d4', 'estado': 'pendiente', 'destino': 'Panamá', "
+        "'mensaje': 'La solicitud fue registrada.'}"
+    )
+    resultado = parsear_json_respuesta(texto)
+    assert resultado["estado"] == "pendiente"
+    assert resultado["destino"] == "Panamá"
+
+
 def test_clima_tool_devuelve_texto_de_wttr():
     tool = ClimaTool()
     respuesta_falsa = Mock()

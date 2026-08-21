@@ -32,7 +32,10 @@ def test_crear_solicitud_construye_payload_correcto():
 
 
 def test_crear_solicitud_sin_api_key_no_envia_el_header():
-    client = VacacionesApiClient(base_url="http://localhost:5051", api_key=None)
+    # api_key="" (no None): el cliente trata None como "usar el default de
+    # config.py", así que solo una cadena vacía fuerza "sin key" de forma
+    # aislada, sin depender de si VACACIONES_API_KEY está seteada en .env.
+    client = VacacionesApiClient(base_url="http://localhost:5051", api_key="")
     with patch("requests.request") as mock_request:
         mock_request.return_value.raise_for_status = lambda: None
         mock_request.return_value.json.return_value = {"solicitudId": SOLICITUD_ID, "estado": "pendiente"}

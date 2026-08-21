@@ -4,7 +4,7 @@ las tools de este mismo paquete."""
 from smolagents import CodeAgent, WebSearchTool
 
 from app.agents.viaje.tools import ClimaTool, parsear_json_respuesta
-from app.config import get_model
+from app.config import MAX_STEPS_VIAJE, get_model
 
 INSTRUCCIONES = """\
 Eres un agente investigador de viajes. Dado un destino y un rango de fechas,
@@ -36,7 +36,8 @@ def crear_agente_viaje() -> CodeAgent:
             "Llámalo con el destino y las fechas del viaje como tarea."
         ),
         instructions=INSTRUCCIONES,
-        max_steps=8,
+        max_steps=MAX_STEPS_VIAJE,
+        additional_authorized_imports=["json"],
     )
 
 
