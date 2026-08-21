@@ -27,6 +27,7 @@ class Settings:
             "BASE_URL_VACACIONES_API", "http://localhost:5000"
         ).rstrip("/")
         self.use_mock_vacaciones_api = _env_bool("USE_MOCK_VACACIONES_API", True)
+        self.mock_estado = os.getenv("MOCK_ESTADO", "pendiente").strip().lower()
         self.api_key_vacaciones_api = os.getenv(
             "API_KEY_VACACIONES_API", "dev-key-vacaciones-agent1"
         ).strip()

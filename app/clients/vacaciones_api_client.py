@@ -14,12 +14,16 @@ class VacacionesAPIClient:
         base_url: str | None = None,
         use_mock: bool | None = None,
         api_key: str | None = None,
+        mock_estado: str | None = None,
     ):
         self.base_url = (base_url or settings.base_url_vacaciones_api).rstrip("/")
         self.use_mock = (
             settings.use_mock_vacaciones_api if use_mock is None else use_mock
         )
         self.api_key = api_key or settings.api_key_vacaciones_api
+        self.mock_estado = (
+            settings.mock_estado if mock_estado is None else mock_estado
+        )
         self._headers = {"X-Api-Key": self.api_key}
 
     def crear_solicitud(
@@ -107,20 +111,28 @@ class VacacionesAPIClient:
         fecha_fin: str,
         destino: str | None,
     ) -> dict:
-        logger.info("VacacionesAPIClient [mock] crear solicitud para empleado %s", empleado_id)
+        logger.info(
+            "VacacionesAPIClient [mock] crear solicitud para empleado %s (estado %s)",
+            empleado_id,
+            self.mock_estado,
+        )
         return {
             "solicitud_id": str(uuid.uuid4()),
-            "estado": "pendiente",
+            "estado": self.mock_estado,
             "fecha_inicio": fecha_inicio,
             "fecha_fin": fecha_fin,
             "destino": destino,
-            "mensaje": "Solicitud de vacaciones creada correctamente",
+            "mensaje": f"Solicitud de vacaciones creada con estado {self.mock_estado}",
         }
 
     def _mock_consultar(self, solicitud_id: str) -> dict:
-        logger.info("VacacionesAPIClient [mock] consultar estado de %s", solicitud_id)
+        logger.info(
+            "VacacionesAPIClient [mock] consultar estado de %s (estado %s)",
+            solicitud_id,
+            self.mock_estado,
+        )
         return {
             "solicitud_id": solicitud_id,
-            "estado": "pendiente",
-            "mensaje": "La solicitud esta pendiente de aprobacion",
+            "estado": self.mock_estado,
+            "mensaje": f"La solicitud figura con estado {self.mock_estado}",
         }
