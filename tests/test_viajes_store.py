@@ -77,3 +77,23 @@ def test_store_corrupto_inicia_vacio(tmp_path):
     ruta.write_text("{no es json", encoding="utf-8")
     store = ViajesStore(path=ruta)
     assert store.viajes_pendientes_de_empleado("123") == []
+
+
+def test_eliminar_quita_la_entrada(tmp_path):
+    store = ViajesStore(path=tmp_path / "store.json")
+    store.guardar_viaje(GUID, empleado_id="123", destino="Cancun")
+
+    assert store.eliminar(GUID) is True
+    assert store.obtener(GUID) is None
+    assert store.viajes_pendientes_de_empleado("123") == []
+    assert store.eliminar(GUID) is False
+
+
+def test_eliminar_persiste_en_disco(tmp_path):
+    ruta = tmp_path / "store.json"
+    s1 = ViajesStore(path=ruta)
+    s1.guardar_viaje(GUID, empleado_id="123")
+    s1.eliminar(GUID)
+
+    s2 = ViajesStore(path=ruta)
+    assert s2.obtener(GUID) is None

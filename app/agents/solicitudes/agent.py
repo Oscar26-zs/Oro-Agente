@@ -115,6 +115,19 @@ class AgenteSolicitudes(BaseAgent):
             logger.warning("Llamada a la API de vacaciones fallo: %s", exc)
             return {"error": str(exc)}
 
+    @staticmethod
+    def _mensaje_error(error: str, solicitud_id: str | None) -> str:
+        if "404" in error or "no encontrada" in error.lower():
+            referencia = (
+                f"La solicitud {solicitud_id}" if solicitud_id else "Esa solicitud"
+            )
+            return (
+                f"{referencia} no existe en el sistema de vacaciones (puede ser de "
+                "una prueba anterior). Revisa el identificador o crea una nueva "
+                "solicitud."
+            )
+        return error
+
     def run(self, mensaje: str, empleado_id: int | str | None = None) -> SolicitudOutput:
         intencion = self._analizar(mensaje)
         identificador = intencion.empleado_id or (
@@ -134,7 +147,7 @@ class AgenteSolicitudes(BaseAgent):
                     accion="consultar",
                     solicitud_id=data.get("solicitud_id") or intencion.solicitud_id,
                     estado="error",
-                    mensaje=data["error"],
+                    mensaje=self._mensaje_error(data["error"], intencion.solicitud_id),
                 )
             return SolicitudConsultarOutput(
                 accion="consultar",

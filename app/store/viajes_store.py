@@ -102,3 +102,13 @@ class ViajesStore:
             if viaje is not None:
                 viaje["recomendaciones_entregadas"] = True
                 self._save()
+
+    def eliminar(self, solicitud_id: str) -> bool:
+        """Retira una entrada del contexto (ej. solicitudes que ya no existen)."""
+        with self._lock:
+            viajes = self._data.get("viajes", {})
+            if solicitud_id in viajes:
+                del viajes[solicitud_id]
+                self._save()
+                return True
+            return False

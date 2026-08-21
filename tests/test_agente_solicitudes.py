@@ -135,7 +135,25 @@ def test_agente_consulta_estado_error_api(monkeypatch):
     )
     out = agente.run(f"Como va la solicitud {GUID}", empleado_id="123")
     assert out.estado == "error"
-    assert "404" in out.mensaje
+    assert "no existe" in out.mensaje
+    assert GUID in out.mensaje
+
+
+def test_agente_consulta_estado_error_generico(monkeypatch):
+    class ClientError500:
+        def consultar_estado(self, solicitud_id):
+            raise RuntimeError("El sistema de vacaciones respondio 500")
+
+    agente = AgenteSolicitudes(client=ClientError500())
+    monkeypatch.setattr(
+        agente,
+        "_analizar",
+        lambda mensaje: IntencionSolicitud(accion="consultar", solicitud_id=GUID),
+    )
+    out = agente.run(f"Como va la solicitud {GUID}", empleado_id="123")
+    assert out.estado == "error"
+    assert "500" in out.mensaje
+    assert "no existe" not in out.mensaje
 
 
 def test_heuristica_captura_guid_y_empleado_a_str():

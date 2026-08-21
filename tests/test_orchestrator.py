@@ -44,6 +44,9 @@ class FakeStore:
             self.viajes[solicitud_id]["recomendaciones_entregadas"] = True
             self.entregados.append(solicitud_id)
 
+    def eliminar(self, solicitud_id):
+        return self.viajes.pop(solicitud_id, None) is not None
+
 
 class FakeEstadoClient:
     def __init__(self, estados=None, fallar=False):
@@ -286,3 +289,48 @@ def test_otro_empleado_no_recibe_recomendaciones_ajenas():
     assert estado_client.consultas == []  # ni siquiera consulta por otro dueño
     assert viajes.llamados == []
     assert "Ideas de viaje" not in res["respuesta"]
+
+
+def test_solicitud_404_se_retira_del_contexto_y_no_reintenta():
+    store = FakeStore()
+    store.guardar_viaje(OTRO_GUID, empleado_id="123", destino="Cancun")
+
+    class EstadoClient404:
+        def __init__(self):
+            self.consultas = []
+
+        def consultar_estado(self, solicitud_id):
+            self.consultas.append(solicitud_id)
+            raise RuntimeError(
+                "El sistema de vacaciones respondio 404: Solicitud no encontrada."
+            )
+
+    estado_client = EstadoClient404()
+    orquestador, _ = make_orchestrator(
+        "pendiente", store=store, estado_client=estado_client,
+        agente_viaje=FakeViajes(), con_solicitud=False,
+    )
+
+    primera = orquestador.responder("hola", empleado_id="123")
+    assert OTRO_GUID not in store.viajes  # retirado del contexto
+
+    segunda = orquestador.responder("otra vez", empleado_id="123")
+    assert len(estado_client.consultas) == 1  # no vuelve a consultar
+    assert segunda["respuesta"]
+
+
+def test_respuesta_de_error_muestra_solo_el_mensaje():
+    class SolicitudesError:
+        def run(self, mensaje, empleado_id=None):
+            return SolicitudOutput(
+                accion="consultar",
+                solicitud_id=GUID,
+                estado="error",
+                mensaje="La solicitud no existe en el sistema de vacaciones.",
+            )
+
+    orquestador, _ = make_orchestrator()
+    orquestador.solicitudes = SolicitudesError()
+    res = orquestador.responder("como va mi solicitud", empleado_id="123")
+    assert "con estado error" not in res["respuesta"]
+    assert "no existe" in res["respuesta"]

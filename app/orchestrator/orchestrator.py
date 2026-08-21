@@ -11,6 +11,11 @@ ESTADO_APROBADO = "aprobada"
 ESTADOS_SIN_VIAJE = {"error", "incompleta"}
 
 
+def _solicitud_inexistente(exc: Exception) -> bool:
+    texto = str(exc)
+    return "404" in texto or "no encontrada" in texto.lower()
+
+
 class Orchestrator:
     """Coordina los agentes y mantiene el contexto de conversacion.
 
@@ -106,7 +111,16 @@ class Orchestrator:
         bloques = []
         for viaje in pendientes:
             sid = viaje.get("solicitud_id")
-            estado_info = self._estado_seguro(sid)
+            estado_info, retirar = self._consultar_estado(sid)
+            if retirar:
+                try:
+                    self.store.eliminar(sid)
+                    logger.info(
+                        "Se retiro del contexto la solicitud inexistente %s", sid
+                    )
+                except Exception as exc:
+                    logger.warning("No se pudo actualizar el store: %s", exc)
+                continue
             if estado_info is None:
                 continue
             if str(estado_info.get("estado", "")).lower() != ESTADO_APROBADO:
@@ -121,14 +135,22 @@ class Orchestrator:
             bloques.append(bloque)
         return " ".join(bloques) if bloques else None
 
-    def _estado_seguro(self, solicitud_id) -> dict | None:
+    def _consultar_estado(self, solicitud_id) -> tuple[dict | None, bool]:
+        """Consulta el estado de una solicitud del contexto.
+
+        Retorna (info, retirar): retirar=True cuando la solicitud ya no existe
+        en el sistema (404) y debe salir del contexto para no volver a
+        consultarse.
+        """
         try:
-            return self._cliente_estado.consultar_estado(solicitud_id)
+            return self._cliente_estado.consultar_estado(solicitud_id), False
         except Exception as exc:
+            if _solicitud_inexistente(exc):
+                return None, True
             logger.warning(
                 "No se pudo consultar el estado de %s: %s", solicitud_id, exc
             )
-            return None
+            return None, False
 
     def _bloque_aprobacion(self, viaje: dict, mensaje: str) -> str | None:
         """Texto de felicitacion + recomendaciones usando el contexto guardado."""
@@ -159,6 +181,8 @@ class Orchestrator:
     def _texto(self, resultado: SolicitudOutput) -> str:
         if resultado.estado.lower() == "incompleta":
             return resultado.mensaje
+        if resultado.estado.lower() == "error":
+            return resultado.mensaje or "Su solicitud quedo en estado error."
         if resultado.solicitud_id:
             return (
                 f"{resultado.mensaje} Solicitud #{resultado.solicitud_id} "
