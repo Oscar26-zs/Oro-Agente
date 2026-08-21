@@ -14,10 +14,10 @@ from .tools import (
 logger = get_logger(__name__)
 
 RECOMENDACION_SYSTEM = (
-    "Eres un asesor de viajes. Al empleado ya le APROBARON sus vacaciones y le "
-    "entregamos el destino, las fechas y datos de referencia (clima, vuelos, "
-    "hoteles y actividades).\n"
-    "Redacta una recomendacion breve (maximo 8 lineas), amable y util, en espanol. "
+    "Eres un asesor de viajes. Al empleado ya le APROBARON sus vacaciones, te "
+    "pasan el destino, las fechas y datos de referencia (clima, vuelos, hoteles "
+    "y actividades) y debes redactarle SU PLAN DE VIAJE.\n"
+    "Redacta el plan breve (maximo 8 lineas), amable y util, en espanol. "
     "Menciona lo mas relevante de cada dato entregado. No inventes datos que no "
     "aparezcan en la informacion recibida."
 )

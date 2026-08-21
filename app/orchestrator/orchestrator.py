@@ -8,12 +8,44 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 ESTADO_APROBADO = "aprobada"
+ESTADO_PENDIENTE = "pendiente"
 ESTADOS_SIN_VIAJE = {"error", "incompleta"}
+
+PLAN_KEYWORDS = (
+    "plan",
+    "viaje",
+    "viajar",
+    "vuelo",
+    "hotel",
+    "actividade",
+    "recomend",
+    "itinerario",
+    "que hacer",
+    "que visitar",
+    "preparame",
+    "muestrame",
+    "armame",
+    "si quiero",
+    "dale",
+    "hazlo",
+    "obvio",
+)
+
+OFERTA_PLAN = (
+    'Si quieres, te preparo tu plan de viaje: escribe "quiero mi plan de viaje" '
+    "y te comparto clima, vuelos, hoteles y actividades."
+)
 
 
 def _solicitud_inexistente(exc: Exception) -> bool:
     texto = str(exc)
     return "404" in texto or "no encontrada" in texto.lower()
+
+
+def _pide_plan(mensaje: str) -> bool:
+    """True si el mensaje del empleado pide explicitamente su plan de viaje."""
+    texto = (mensaje or "").lower()
+    return any(k in texto for k in PLAN_KEYWORDS)
 
 
 class Orchestrator:
@@ -32,9 +64,14 @@ class Orchestrator:
         store: ViajesStore | None = None,
         cliente_estado=None,
     ):
-        self.solicitudes = agente_solicitudes or AgenteSolicitudes()
         self.viajes = agente_viaje or AgenteViaje()
         self.store = store if store is not None else ViajesStore()
+        self.solicitudes = (
+            agente_solicitudes if agente_solicitudes is not None else AgenteSolicitudes()
+        )
+        # El agente de solicitudes comparte el mismo contexto del orquestador.
+        if hasattr(self.solicitudes, "store"):
+            self.solicitudes.store = self.store
         self._cliente_estado_inyectado = cliente_estado
 
     @property
@@ -63,13 +100,17 @@ class Orchestrator:
 
         self._registrar_viaje(resultado, empleado)
 
-        partes = [self._texto(resultado)]
-        texto_mismo_turno = self._texto_viaje(resultado, mensaje)
-        if texto_mismo_turno:
-            partes.append(texto_mismo_turno)
-        texto_contexto = self._revisar_aprobaciones_previas(empleado, mensaje)
-        if texto_contexto:
-            partes.append(texto_contexto)
+        partes = []
+        if resultado.accion != "plan":
+            partes.append(self._texto(resultado))
+            oferta = self._oferta_si_aprobada(resultado)
+            if oferta:
+                partes.append(oferta)
+        plan = self._entregar_si_piden_plan(
+            empleado, mensaje, pedir_plan=resultado.accion == "plan"
+        )
+        if plan:
+            partes.append(plan)
         return {"respuesta": " ".join(p for p in partes if p)}
 
     # ------------------------------------------------------------------
@@ -94,21 +135,31 @@ class Orchestrator:
         except Exception as exc:
             logger.warning("No se pudo guardar el contexto del viaje: %s", exc)
 
-    def _revisar_aprobaciones_previas(
-        self, empleado: str | None, mensaje: str
+    def _entregar_si_piden_plan(
+        self,
+        empleado: str | None,
+        mensaje: str,
+        pedir_plan: bool = False,
     ) -> str | None:
-        """Detecta solicitudes previas que pasaron a aprobada y entrega su bloque."""
-        if not empleado:
+        """Entrega recomendaciones SOLO cuando el empleado pide su plan.
+
+        La senal puede venir del clasificador del Agente 1 (pedir_plan=True)
+        o de las palabras clave del mensaje como respaldo. Preguntar por el
+        estado o saludar nunca activa al agente de viaje. El plan se entrega
+        UNA sola vez: si ya se entrego, se avisa en lugar de repetirlo.
+        """
+        if not empleado or not (pedir_plan or _pide_plan(mensaje)):
             return None
         try:
             pendientes = self.store.viajes_pendientes_de_empleado(empleado)
+            if not pendientes:
+                return self._aviso_sin_plan_nuevo(empleado)
         except Exception as exc:
             logger.warning("Store de viajes no disponible: %s", exc)
             return None
-        if not pendientes:
-            return None
 
         bloques = []
+        notas = []
         for viaje in pendientes:
             sid = viaje.get("solicitud_id")
             estado_info, retirar = self._consultar_estado(sid)
@@ -123,17 +174,43 @@ class Orchestrator:
                 continue
             if estado_info is None:
                 continue
-            if str(estado_info.get("estado", "")).lower() != ESTADO_APROBADO:
-                continue
-            bloque = self._bloque_aprobacion(viaje, mensaje)
-            if bloque is None:
-                continue
-            try:
-                self.store.marcar_entregado(sid)
-            except Exception as exc:
-                logger.warning("No se pudo actualizar el store: %s", exc)
-            bloques.append(bloque)
-        return " ".join(bloques) if bloques else None
+            estado = str(estado_info.get("estado", "")).lower()
+            if estado == ESTADO_APROBADO:
+                bloque = self._bloque_aprobacion(viaje, mensaje)
+                if bloque is None:
+                    continue
+                try:
+                    self.store.marcar_entregado(sid)
+                except Exception as exc:
+                    logger.warning("No se pudo actualizar el store: %s", exc)
+                bloques.append(bloque)
+            elif estado == ESTADO_PENDIENTE:
+                notas.append(
+                    f"Tu solicitud {sid} sigue pendiente de aprobacion; en cuanto "
+                    "se apruebe te preparo el plan de viaje."
+                )
+            else:
+                notas.append(f"Tu solicitud {sid} figura con estado {estado}.")
+        partes = bloques + notas
+        return " ".join(partes) if partes else None
+
+    def _aviso_sin_plan_nuevo(self, empleado: str) -> str | None:
+        """Mensaje cuando piden el plan pero no queda nada por entregar."""
+        try:
+            historial = self.store.viajes_de_empleado(empleado)
+        except Exception as exc:
+            logger.warning("Store de viajes no disponible: %s", exc)
+            return None
+        if any(v.get("recomendaciones_entregadas") for v in historial):
+            return (
+                "Ya te entregue tu plan de viaje. Si necesitas consultarlo de "
+                "nuevo o algo cambio en tu solicitud, dimelo y lo revisamos."
+            )
+        return (
+            "No tengo registro de una solicitud tuya en esta conversacion. Crea "
+            "una indicando fechas y destino, o pasame el identificador (GUID) "
+            "si ya existe."
+        )
 
     def _consultar_estado(self, solicitud_id) -> tuple[dict | None, bool]:
         """Consulta el estado de una solicitud del contexto.
@@ -190,29 +267,15 @@ class Orchestrator:
             )
         return resultado.mensaje or f"Su solicitud quedo en estado {resultado.estado}."
 
-    def _texto_viaje(self, resultado: SolicitudOutput, mensaje: str) -> str | None:
-        """Disparador de mismo turno: la creacion devolvio aprobada directamente."""
+    # ------------------------------------------------------------------
+    # Textos de respuesta
+
+    @staticmethod
+    def _oferta_si_aprobada(resultado: SolicitudOutput) -> str | None:
+        """Ofrece el plan de viaje cuando una solicitud sale aprobada.
+
+        Nunca entrega el plan de inmediato: se espera el pedido del empleado.
+        """
         if resultado.estado.lower() != ESTADO_APROBADO:
             return None
-        if not resultado.destino:
-            logger.info(
-                "Solicitud aprobada sin destino; no se activa el agente de viaje"
-            )
-            return None
-        try:
-            viaje = self.viajes.run(
-                destino=resultado.destino,
-                fecha_inicio=resultado.fecha_inicio,
-                fecha_fin=resultado.fecha_fin,
-                mensaje=mensaje,
-            )
-        except Exception as exc:
-            logger.warning("Agente de viaje fallo (%s); se omite su seccion", exc)
-            return None
-        if resultado.solicitud_id:
-            try:
-                self.store.marcar_entregado(resultado.solicitud_id)
-            except Exception as exc:
-                logger.warning("No se pudo actualizar el store: %s", exc)
-        logger.info("Agente de viaje genero recomendaciones para %s", viaje.destino)
-        return viaje.recomendaciones
+        return OFERTA_PLAN

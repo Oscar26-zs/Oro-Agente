@@ -39,6 +39,24 @@ class FakeStore:
             and not v["recomendaciones_entregadas"]
         ]
 
+    def ultimo_viaje_de_empleado(self, empleado_id):
+        if empleado_id is None:
+            return None
+        emp = str(empleado_id)
+        for viaje in reversed(list(self.viajes.values())):
+            if viaje["empleado_id"] == emp:
+                return dict(viaje)
+        return None
+
+    def viajes_de_empleado(self, empleado_id):
+        if empleado_id is None:
+            return []
+        emp = str(empleado_id)
+        return [
+            dict(v) for v in self.viajes.values()
+            if v["empleado_id"] == emp
+        ]
+
     def marcar_entregado(self, solicitud_id):
         if solicitud_id in self.viajes:
             self.viajes[solicitud_id]["recomendaciones_entregadas"] = True
@@ -147,19 +165,17 @@ def test_responder_con_empleado_id_como_texto():
 
 # ------------------------------------------------------------------ mismo turno
 
-def test_solicitud_aprobada_activa_agente_viaje():
+def test_solicitud_aprobada_ofrece_plan_sin_entregar():
     store = FakeStore()
     viajes = FakeViajes()
     orquestador, _ = make_orchestrator(
         "aprobada", store=store, agente_viaje=viajes
     )
     res = orquestador.responder("Quiero vacaciones a Cancun", empleado_id=123)
-    assert len(viajes.llamados) == 1
-    assert viajes.llamados[0]["destino"] == "Cancun"
-    assert "Ideas de viaje para Cancun" in res["respuesta"]
     assert "aprobada" in res["respuesta"]
-    # el mismo turno marca la solicitud como entregada para no repetir
-    assert GUID in store.entregados
+    assert "plan de viaje" in res["respuesta"]
+    assert viajes.llamados == []  # no entrega nada hasta que lo pidan
+    assert store.entregados == []
 
 
 def test_solicitud_pendiente_no_activa_agente_viaje():
@@ -168,26 +184,34 @@ def test_solicitud_pendiente_no_activa_agente_viaje():
     res = orquestador.responder("Quiero vacaciones a Cancun", empleado_id=123)
     assert viajes.llamados == []
     assert "Ideas de viaje" not in res["respuesta"]
+    assert "plan de viaje" not in res["respuesta"]
 
 
-def test_solicitud_aprobada_sin_destino_no_activa_agente_viaje():
+def test_solicitud_aprobada_sin_destino_ofrece_plan():
     viajes = FakeViajes()
     orquestador, _ = make_orchestrator("aprobada", destino_solicitud=None,
                                        agente_viaje=viajes)
     res = orquestador.responder("Quiero vacaciones", empleado_id=123)
     assert viajes.llamados == []
     assert "Ideas de viaje" not in res["respuesta"]
+    assert "plan de viaje" in res["respuesta"]
 
 
-def test_error_del_agente_viaje_no_rompe_la_respuesta():
+def test_fallo_del_agente_viaje_al_pedir_plan_no_rompe_la_respuesta():
     class ViajesRotos:
         def run(self, **kwargs):
             raise RuntimeError("fallo inesperado")
 
-    orquestador, _ = make_orchestrator("aprobada", agente_viaje=ViajesRotos())
-    res = orquestador.responder("Quiero vacaciones a Cancun", empleado_id=123)
-    assert GUID in res["respuesta"]
-    assert "aprobada" in res["respuesta"]
+    store = FakeStore()
+    store.guardar_viaje(OTRO_GUID, empleado_id="123", destino="Cancun")
+    estado_client = FakeEstadoClient(estados={OTRO_GUID: "aprobada"})
+    orquestador, _ = make_orchestrator(
+        "pendiente", store=store, estado_client=estado_client,
+        agente_viaje=ViajesRotos(), con_solicitud=False,
+    )
+    res = orquestador.responder("quiero mi plan de viaje", empleado_id="123")
+    assert res["respuesta"]  # respuesta normal del agente 1
+    assert store.entregados == []  # no se marca entregado si fallo
 
 
 # ------------------------------------------------------------------ contexto
@@ -203,7 +227,7 @@ def test_creacion_registra_contexto_en_el_store():
     assert viaje["fecha_inicio"] == "2026-09-01"
 
 
-def test_aprobacion_previa_entrega_recomendaciones_una_vez():
+def test_peticion_plan_entrega_recomendaciones_una_vez():
     store = FakeStore()
     store.guardar_viaje(
         OTRO_GUID, empleado_id="123", destino="Cancun",
@@ -216,7 +240,7 @@ def test_aprobacion_previa_entrega_recomendaciones_una_vez():
         agente_viaje=viajes, con_solicitud=False,
     )
 
-    primera = orquestador.responder("hola", empleado_id="123")
+    primera = orquestador.responder("quiero mi plan de viaje", empleado_id="123")
     assert estado_client.consultas == [OTRO_GUID]
     assert len(viajes.llamados) == 1
     assert viajes.llamados[0]["destino"] == "Cancun"
@@ -224,23 +248,111 @@ def test_aprobacion_previa_entrega_recomendaciones_una_vez():
     assert "Ideas de viaje para Cancun" in primera["respuesta"]
     assert OTRO_GUID in store.entregados
 
-    segunda = orquestador.responder("otra consulta", empleado_id="123")
-    assert len(viajes.llamados) == 1
-    assert "Ideas de viaje" not in segunda["respuesta"]
+    segunda = orquestador.responder("otra vez quiero el plan", empleado_id="123")
+    assert len(viajes.llamados) == 1  # no se vuelve a generar
+    assert "Ya te entregue tu plan" in segunda["respuesta"]
 
 
-def test_solicitud_pendiente_en_store_no_entrega_nada():
+# ------------------------------------------------------------------ accion plan
+
+class SolicitudesPlan:
+    """El clasificador detecta el pedido de plan sin palabras clave exactas."""
+
+    def run(self, mensaje, empleado_id=None):
+        return SolicitudOutput(accion="plan", estado="informativo", mensaje="")
+
+
+def test_pedido_plan_por_clasificador_entrega_y_no_muestra_menu():
+    store = FakeStore()
+    store.guardar_viaje(
+        OTRO_GUID, empleado_id="123", destino="Cancun",
+        fecha_inicio="2026-09-01", fecha_fin="2026-09-15",
+    )
+    estado_client = FakeEstadoClient(estados={OTRO_GUID: "aprobada"})
+    viajes = FakeViajes()
+    orquestador, _ = make_orchestrator(
+        "pendiente", store=store, estado_client=estado_client, agente_viaje=viajes,
+        con_solicitud=False,
+    )
+    orquestador.solicitudes = SolicitudesPlan()
+
+    res = orquestador.responder("preparame eso que me ofreciste", empleado_id="123")
+    assert "Puedo ayudarte" not in res["respuesta"]  # nunca el menu fantasma
+    assert "APROBADA" in res["respuesta"]
+    assert "Ideas de viaje para Cancun" in res["respuesta"]
+    assert OTRO_GUID in store.entregados
+
+
+def test_repedido_tras_entrega_avisa_sin_regenerar():
+    store = FakeStore()
+    store.guardar_viaje(
+        OTRO_GUID, empleado_id="123", destino="Cancun",
+        fecha_inicio="2026-09-01", fecha_fin="2026-09-15",
+    )
+    estado_client = FakeEstadoClient(estados={OTRO_GUID: "aprobada"})
+    viajes = FakeViajes()
+    orquestador, _ = make_orchestrator(
+        "pendiente", store=store, estado_client=estado_client, agente_viaje=viajes,
+        con_solicitud=False,
+    )
+    orquestador.solicitudes = SolicitudesPlan()
+
+    primera = orquestador.responder("dame mi plan", empleado_id="123")
+    assert "Ideas de viaje" in primera["respuesta"]
+
+    segunda = orquestador.responder("dame mi plan otra vez", empleado_id="123")
+    assert len(viajes.llamados) == 1  # una sola generacion
+    assert "Ya te entregue tu plan" in segunda["respuesta"]
+
+
+def test_pedido_plan_sin_ningun_registro():
+    store = FakeStore()
+    orquestador, _ = make_orchestrator(
+        "pendiente", store=store,
+        estado_client=FakeEstadoClient(), agente_viaje=FakeViajes(),
+        con_solicitud=False,
+    )
+    orquestador.solicitudes = SolicitudesPlan()
+
+    res = orquestador.responder("quiero mi plan de viaje", empleado_id="123")
+    assert "No tengo registro de una solicitud tuya" in res["respuesta"]
+    assert "Puedo ayudarte" not in res["respuesta"]
+
+
+def test_solicitud_pendiente_en_store_avisa_si_piden_plan():
     store = FakeStore()
     store.guardar_viaje(OTRO_GUID, empleado_id="123", destino="Cancun")
     estado_client = FakeEstadoClient(estados={OTRO_GUID: "pendiente"})
     viajes = FakeViajes()
     orquestador, _ = make_orchestrator(
-        "pendiente", store=store, estado_client=estado_client, agente_viaje=viajes
+        "pendiente", store=store, estado_client=estado_client, agente_viaje=viajes,
+        con_solicitud=False,
     )
 
-    res = orquestador.responder("hola", empleado_id="123")
+    res = orquestador.responder("quiero mi plan de viaje", empleado_id="123")
     assert viajes.llamados == []
     assert "Ideas de viaje" not in res["respuesta"]
+    assert "pendiente de aprobacion" in res["respuesta"]
+    assert store.entregados == []
+
+
+def test_saludo_o_estado_no_consultan_ni_entregan_plan():
+    store = FakeStore()
+    store.guardar_viaje(OTRO_GUID, empleado_id="123", destino="Cancun")
+    estado_client = FakeEstadoClient(estados={OTRO_GUID: "aprobada"})
+    viajes = FakeViajes()
+    orquestador, _ = make_orchestrator(
+        "pendiente", store=store, estado_client=estado_client, agente_viaje=viajes,
+        con_solicitud=False,
+    )
+
+    saludo = orquestador.responder("hola", empleado_id="123")
+    estado_q = orquestador.responder("como va mi solicitud?", empleado_id="123")
+    for res in (saludo, estado_q):
+        assert "Ideas de viaje" not in res["respuesta"]
+        assert "APROBADA" not in res["respuesta"]
+    assert estado_client.consultas == []  # ni siquiera consulta el estado
+    assert viajes.llamados == []
     assert store.entregados == []
 
 
@@ -250,10 +362,11 @@ def test_api_de_estado_falla_y_no_rompe_la_respuesta():
     estado_client = FakeEstadoClient(fallar=True)
     viajes = FakeViajes()
     orquestador, _ = make_orchestrator(
-        "pendiente", store=store, estado_client=estado_client, agente_viaje=viajes
+        "pendiente", store=store, estado_client=estado_client, agente_viaje=viajes,
+        con_solicitud=False,
     )
 
-    res = orquestador.responder("hola", empleado_id="123")
+    res = orquestador.responder("quiero mi plan de viaje", empleado_id="123")
     assert viajes.llamados == []
     assert store.entregados == []
     assert res["respuesta"]  # respuesta normal del agente 1
@@ -265,10 +378,11 @@ def test_aprobacion_previa_sin_destino_pide_destino():
     estado_client = FakeEstadoClient(estados={OTRO_GUID: "aprobada"})
     viajes = FakeViajes()
     orquestador, _ = make_orchestrator(
-        "pendiente", store=store, estado_client=estado_client, agente_viaje=viajes
+        "pendiente", store=store, estado_client=estado_client, agente_viaje=viajes,
+        con_solicitud=False,
     )
 
-    res = orquestador.responder("hola", empleado_id="123")
+    res = orquestador.responder("quiero mi plan de viaje", empleado_id="123")
     assert viajes.llamados == []  # no hay destino para investigar
     assert "APROBADA" in res["respuesta"]
     assert "Para donde quieres viajar" in res["respuesta"]
@@ -311,10 +425,10 @@ def test_solicitud_404_se_retira_del_contexto_y_no_reintenta():
         agente_viaje=FakeViajes(), con_solicitud=False,
     )
 
-    primera = orquestador.responder("hola", empleado_id="123")
+    primera = orquestador.responder("quiero mi plan de viaje", empleado_id="123")
     assert OTRO_GUID not in store.viajes  # retirado del contexto
 
-    segunda = orquestador.responder("otra vez", empleado_id="123")
+    segunda = orquestador.responder("quiero el plan otra vez", empleado_id="123")
     assert len(estado_client.consultas) == 1  # no vuelve a consultar
     assert segunda["respuesta"]
 
@@ -334,3 +448,60 @@ def test_respuesta_de_error_muestra_solo_el_mensaje():
     res = orquestador.responder("como va mi solicitud", empleado_id="123")
     assert "con estado error" not in res["respuesta"]
     assert "no existe" in res["respuesta"]
+
+
+# ------------------------------------------------------------------ ayuda
+
+class SolicitudesAyuda:
+    def run(self, mensaje, empleado_id=None):
+        return SolicitudOutput(
+            accion="ayuda",
+            estado="informativo",
+            mensaje=(
+                "Hola! Puedo ayudarte a:\n"
+                "- Solicitar vacaciones: dime las fechas y el destino.\n"
+                "- Consultar una solicitud: pasame su identificador."
+            ),
+        )
+
+
+def test_saludo_recibe_menu_y_no_pide_fechas():
+    orquestador, _ = make_orchestrator("pendiente")
+    orquestador.solicitudes = SolicitudesAyuda()
+    res = orquestador.responder("hola", empleado_id="123")
+    assert "Puedo ayudarte" in res["respuesta"]
+    assert "necesito que me indiques el destino" not in res["respuesta"]
+
+
+def test_consulta_aprobada_ofrece_plan_sin_entregarlo():
+    class SolicitudesConsultaAprobada:
+        def run(self, mensaje, empleado_id=None):
+            return SolicitudOutput(
+                accion="consultar",
+                solicitud_id=OTRO_GUID,
+                estado="aprobada",
+                mensaje=f"La solicitud {OTRO_GUID} figura con estado aprobada.",
+            )
+
+    store = FakeStore()
+    store.guardar_viaje(
+        OTRO_GUID, empleado_id="123", destino="Cancun",
+        fecha_inicio="2026-09-01", fecha_fin="2026-09-15",
+    )
+    viajes = FakeViajes()
+    orquestador, _ = make_orchestrator(
+        "pendiente", store=store,
+        estado_client=FakeEstadoClient(estados={OTRO_GUID: "aprobada"}),
+        agente_viaje=viajes,
+    )
+    orquestador.solicitudes = SolicitudesConsultaAprobada()
+
+    res = orquestador.responder("como va mi solicitud?", empleado_id="123")
+    assert "aprobada" in res["respuesta"]
+    assert "plan de viaje" in res["respuesta"]  # ofrece...
+    assert "Ideas de viaje" not in res["respuesta"]  # ...pero no entrega
+    assert viajes.llamados == []
+
+    res2 = orquestador.responder("quiero mi plan de viaje", empleado_id="123")
+    assert "Ideas de viaje para Cancun" in res2["respuesta"]  # ahora si
+    assert OTRO_GUID in store.entregados

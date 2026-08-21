@@ -4,6 +4,7 @@ import re
 from ..base_agent import BaseAgent
 from ..llm import build_model
 from ...clients.vacaciones_api_client import VacacionesAPIClient
+from ...store.viajes_store import ViajesStore
 from ...utils.logger import get_logger
 from .schemas import (
     IntencionSolicitud,
@@ -19,20 +20,40 @@ GUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 
+PLAN_WORDS = (
+    "plan",
+    "viaje",
+    "viajar",
+    "vuelo",
+    "hotel",
+    "actividade",
+    "recomend",
+    "itinerario",
+)
+
 ANALISIS_SYSTEM = (
     "Eres un analizador de mensajes de un sistema de vacaciones. El empleado escribe "
-    "en lenguaje natural lo que quiere hacer (crear una solicitud de vacaciones o "
-    "consultar el estado de una solicitud existente).\n"
+    "en lenguaje natural lo que quiere hacer.\n"
     "Debes devolver UNICAMENTE un JSON valido con esta forma:\n"
-    '{"accion": "crear" o "consultar", "solicitud_id": "GUID" o null, '
+    '{"accion": "crear", "consultar", "ayuda" o "plan", "solicitud_id": "GUID" o null, '
     '"empleado_id": "texto" o null, "fecha_inicio": "YYYY-MM-DD" o null, '
     '"fecha_fin": "YYYY-MM-DD" o null, "destino": "texto" o null}\n'
     "Reglas:\n"
-    '- accion "crear": el empleado pide pedir/tomar/solicitar vacaciones con fechas. '
-    "Convierte las fechas naturales al formato YYYY-MM-DD usando el anio 2026 si no lo menciona.\n"
+    '- accion "crear": SOLO si el empleado pide expresamente pedir/tomar/solicitar '
+    "vacaciones nuevas con fechas. Convierte las fechas naturales al formato "
+    "YYYY-MM-DD usando el anio 2026 si no lo menciona.\n"
     '- accion "consultar": el empleado pregunta por el estado/avance de una solicitud '
-    "existente; entonces coloca su identificador (un GUID como "
-    "3f2504e0-4f89-41d3-9a0c-0305e82c3301) en solicitud_id.\n"
+    "(ejemplos: \"como va mi solicitud\", \"ya quedo la mia?\", \"en que va la 123\"). "
+    "Coloca su identificador solo si aparece un GUID como "
+    "3f2504e0-4f89-41d3-9a0c-0305e82c3301 o un numero; si no lo menciona deja "
+    "solicitud_id en null. Preguntar por el estado NUNCA se clasifica como crear "
+    "ni como ayuda.\n"
+    '- accion "plan": el empleado pide SU PLAN DE VIAJE o recomendaciones para unas '
+    "vacaciones ya solicitadas/aprobadas (ejemplos: \"quiero mi plan de viaje\", "
+    "\"créame un plan para Cancun\", \"que vuelos y hoteles me recomiendas\", "
+    "\"preparame recomendaciones\"). No es crear una solicitud ni consultarla.\n"
+    '- accion "ayuda": saludos, agradecimientos, preguntas generales o charla que no '
+    "pide crear, consultar ni un plan de viaje.\n"
     "- Si falta informacion clave (por ejemplo no hay fechas para crear), devuelve null "
     "en ese campo."
 )
@@ -43,9 +64,13 @@ class AgenteSolicitudes(BaseAgent):
         self,
         client: VacacionesAPIClient | None = None,
         model=None,
+        store: ViajesStore | None = None,
     ):
         self.client = client or VacacionesAPIClient()
         self._model = model
+        # El orquestador comparte su store para poder resolver consultas
+        # sin identificador ("como va mi solicitud") con el contexto guardado.
+        self.store = store
 
     @property
     def model(self):
@@ -67,8 +92,11 @@ class AgenteSolicitudes(BaseAgent):
             if inicio == -1 or fin == -1:
                 raise ValueError("no JSON")
             datos = json.loads(texto[inicio : fin + 1])
+            accion = datos.get("accion")
+            if accion not in ("crear", "consultar", "ayuda", "plan"):
+                accion = "ayuda"
             return IntencionSolicitud(
-                accion=datos.get("accion", "consultar"),
+                accion=accion,
                 solicitud_id=datos.get("solicitud_id"),
                 empleado_id=datos.get("empleado_id"),
                 fecha_inicio=datos.get("fecha_inicio"),
@@ -95,9 +123,11 @@ class AgenteSolicitudes(BaseAgent):
                 fecha_inicio=self._normalizar_fecha(f_inicio),
                 fecha_fin=self._normalizar_fecha(f_fin),
             )
+        if any(p in texto for p in PLAN_WORDS):
+            return IntencionSolicitud(accion="plan")
         if "vacaciones" in texto or "solicitar" in texto:
             return IntencionSolicitud(accion="crear")
-        return IntencionSolicitud(accion="consultar")
+        return IntencionSolicitud(accion="ayuda")
 
     @staticmethod
     def _normalizar_fecha(fecha: str) -> str:
@@ -107,6 +137,53 @@ class AgenteSolicitudes(BaseAgent):
         dia, mes, anio = m.groups()
         anio = f"20{anio}" if len(anio) == 2 else anio
         return f"{anio}-{mes.zfill(2)}-{dia.zfill(2)}"
+
+    def _consultar(self, intencion: IntencionSolicitud) -> SolicitudConsultarOutput:
+        """Consulta el estado con el identificador dado o, si falta,
+        con la ultima solicitud registrada del empleado en el contexto."""
+        sid = intencion.solicitud_id
+        if not sid:
+            ultimo = self._ultimo_viaje(intencion.empleado_id)
+            if ultimo is None:
+                return SolicitudConsultarOutput(
+                    accion="consultar",
+                    estado="informativo",
+                    mensaje=(
+                        "No tengo registro de una solicitud tuya en esta "
+                        "conversacion. Pasame el identificador (GUID) de tu "
+                        "solicitud y te digo como va."
+                    ),
+                )
+            sid = ultimo.get("solicitud_id")
+        data = self._llamar(
+            lambda: consultar_estado_solicitud(sid, client=self.client)
+        )
+        if "error" in data:
+            return SolicitudConsultarOutput(
+                accion="consultar",
+                solicitud_id=data.get("solicitud_id") or sid,
+                estado="error",
+                mensaje=self._mensaje_error(data["error"], sid),
+            )
+        return SolicitudConsultarOutput(
+            accion="consultar",
+            solicitud_id=data.get("solicitud_id"),
+            estado=data.get("estado", "desconocido"),
+            mensaje=data.get(
+                "mensaje",
+                f"La solicitud {sid} figura con estado "
+                f"{data.get('estado', 'desconocido')}.",
+            ),
+        )
+
+    def _ultimo_viaje(self, empleado_id: str | None) -> dict | None:
+        if self.store is None or not empleado_id:
+            return None
+        try:
+            return self.store.ultimo_viaje_de_empleado(empleado_id)
+        except Exception as exc:
+            logger.warning("No se pudo leer el store de viajes: %s", exc)
+            return None
 
     def _llamar(self, fn) -> dict:
         try:
@@ -136,29 +213,27 @@ class AgenteSolicitudes(BaseAgent):
         if identificador is not None:
             intencion.empleado_id = str(identificador)
 
-        if intencion.accion == "consultar" and intencion.solicitud_id:
-            data = self._llamar(
-                lambda: consultar_estado_solicitud(
-                    intencion.solicitud_id, client=self.client
-                )
-            )
-            if "error" in data:
-                return SolicitudConsultarOutput(
-                    accion="consultar",
-                    solicitud_id=data.get("solicitud_id") or intencion.solicitud_id,
-                    estado="error",
-                    mensaje=self._mensaje_error(data["error"], intencion.solicitud_id),
-                )
-            return SolicitudConsultarOutput(
-                accion="consultar",
-                solicitud_id=data.get("solicitud_id"),
-                estado=data.get("estado", "desconocido"),
-                mensaje=data.get(
-                    "mensaje",
-                    f"La solicitud {intencion.solicitud_id} figura con estado "
-                    f"{data.get('estado', 'desconocido')}.",
+        if intencion.accion == "plan":
+            # El pedido del plan lo atiende el orquestador con el agente de
+            # viaje; este agente no agrega texto para no duplicar respuestas.
+            return SolicitudOutput(accion="plan", estado="informativo", mensaje="")
+
+        if intencion.accion == "ayuda":
+            return SolicitudOutput(
+                accion="ayuda",
+                estado="informativo",
+                mensaje=(
+                    "Hola! Puedo ayudarte a:\n"
+                    "- Solicitar vacaciones: dime las fechas y el destino (por "
+                    "ejemplo: \"quiero vacaciones del 10 al 15 de septiembre a "
+                    "Cancun\").\n"
+                    "- Consultar una solicitud: pasame su identificador y te cuento "
+                    "como va."
                 ),
             )
+
+        if intencion.accion == "consultar":
+            return self._consultar(intencion)
 
         if not intencion.fecha_inicio or not intencion.fecha_fin:
             return SolicitudOutput(

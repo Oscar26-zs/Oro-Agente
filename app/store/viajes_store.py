@@ -96,6 +96,33 @@ class ViajesStore:
                 and not viaje.get("recomendaciones_entregadas")
             ]
 
+    def ultimo_viaje_de_empleado(self, empleado_id: str | None) -> dict | None:
+        """Entrada mas reciente del empleado (entregada o no).
+
+        Permite responder consultas de estado cuando el empleado pregunta
+        por "mi solicitud" sin indicar el identificador.
+        """
+        if empleado_id is None:
+            return None
+        emp = str(empleado_id)
+        with self._lock:
+            for viaje in reversed(list(self._data.get("viajes", {}).values())):
+                if viaje.get("empleado_id") == emp:
+                    return dict(viaje)
+        return None
+
+    def viajes_de_empleado(self, empleado_id: str | None) -> list[dict]:
+        """Todas las entradas del empleado (entregadas o no)."""
+        if empleado_id is None:
+            return []
+        emp = str(empleado_id)
+        with self._lock:
+            return [
+                dict(viaje)
+                for viaje in self._data.get("viajes", {}).values()
+                if viaje.get("empleado_id") == emp
+            ]
+
     def marcar_entregado(self, solicitud_id: str) -> None:
         with self._lock:
             viaje = self._data.get("viajes", {}).get(solicitud_id)

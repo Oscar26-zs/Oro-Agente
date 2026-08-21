@@ -170,3 +170,125 @@ def test_heuristica_consultar_sin_id():
     intencion = agente._heuristica("como va mi solicitud")
     assert intencion.accion == "consultar"
     assert intencion.solicitud_id is None
+
+
+# ------------------------------------------------------------------ ayuda
+
+def test_heuristica_saludo_devuelve_ayuda():
+    agente = AgenteSolicitudes(client=FakeClient())
+    assert agente._heuristica("hola que tal").accion == "ayuda"
+    assert agente._heuristica("gracias por todo").accion == "ayuda"
+
+
+class _Respuesta:
+    def __init__(self, content):
+        self.content = content
+
+
+class _ModeloFijo:
+    def __init__(self, content):
+        self._content = content
+
+    def generate(self, mensajes):
+        return _Respuesta(self._content)
+
+
+def test_analisis_con_accion_desconocida_cae_en_ayuda():
+    agente = AgenteSolicitudes(client=FakeClient())
+    agente._model = _ModeloFijo('{"accion": "cualquiercosa"}')
+    intencion = agente._analizar("hola")
+    assert intencion.accion == "ayuda"
+
+
+def test_analisis_estado_sin_guid_devuelve_consultar():
+    agente = AgenteSolicitudes(client=FakeClient())
+    agente._model = _ModeloFijo(
+        '{"accion": "consultar", "solicitud_id": null, "empleado_id": null, '
+        '"fecha_inicio": null, "fecha_fin": null, "destino": null}'
+    )
+    out = agente.run("como va mi solicitud?", empleado_id="123")
+    assert out.estado != "incompleta"  # nunca pide fechas por una consulta
+
+
+def test_agente_responde_menu_en_saludos(monkeypatch):
+    agente = AgenteSolicitudes(client=FakeClient())
+    monkeypatch.setattr(
+        agente,
+        "_analizar",
+        lambda mensaje: IntencionSolicitud(accion="ayuda"),
+    )
+    out = agente.run("hola", empleado_id="123")
+    assert out.estado != "incompleta"
+    texto = out.mensaje.lower()
+    assert "solicitar vacaciones" in texto
+    assert "identificador" in texto
+
+
+# ------------------------------------------------- consultar sin identificador
+
+class StoreFijo:
+    def __init__(self, viaje=None):
+        self._viaje = viaje
+
+    def ultimo_viaje_de_empleado(self, empleado_id):
+        if self._viaje is None:
+            return None
+        return dict(self._viaje)
+
+
+def test_consulta_sin_guid_usa_ultimo_viaje_del_store(monkeypatch):
+    agente = AgenteSolicitudes(
+        client=FakeClient(),
+        store=StoreFijo({"solicitud_id": GUID}),
+    )
+    monkeypatch.setattr(
+        agente,
+        "_analizar",
+        lambda mensaje: IntencionSolicitud(accion="consultar"),
+    )
+    out = agente.run("como va mi solicitud?", empleado_id="123")
+    assert out.solicitud_id == GUID
+    assert out.estado == "pendiente"
+
+
+def test_consulta_sin_guid_y_sin_registro_pide_identificador(monkeypatch):
+    agente = AgenteSolicitudes(client=FakeClient(), store=StoreFijo(None))
+    monkeypatch.setattr(
+        agente,
+        "_analizar",
+        lambda mensaje: IntencionSolicitud(accion="consultar"),
+    )
+    out = agente.run("como va mi solicitud?", empleado_id="123")
+    assert out.estado == "informativo"
+    assert "identificador" in out.mensaje.lower()
+    # preguntar por el estado JAMAS pide fechas de una creacion
+    assert "necesito que me indiques el destino" not in out.mensaje
+
+
+# ------------------------------------------------------------------ plan
+
+def test_heuristica_peticion_plan_devuelve_accion_plan():
+    agente = AgenteSolicitudes(client=FakeClient())
+    assert agente._heuristica("quiero mi plan de viaje").accion == "plan"
+    assert agente._heuristica("creame el viaje a cancun").accion == "plan"
+    assert agente._heuristica("que hoteles hay por alla").accion == "plan"
+
+
+def test_creacion_con_fechas_gana_sobre_palabras_de_plan():
+    agente = AgenteSolicitudes(client=FakeClient())
+    intencion = agente._heuristica(
+        "quiero vacaciones del 01/09/2026 al 15/09/2026, sera un buen viaje"
+    )
+    assert intencion.accion == "crear"
+    assert intencion.fecha_inicio == "2026-09-01"
+
+
+def test_analisis_plan_del_modelo_entrega_salida_vacia():
+    agente = AgenteSolicitudes(client=FakeClient())
+    agente._model = _ModeloFijo(
+        '{"accion": "plan", "solicitud_id": null, "empleado_id": null, '
+        '"fecha_inicio": null, "fecha_fin": null, "destino": "Cancun"}'
+    )
+    out = agente.run("quiero mi plan de viaje", empleado_id="123")
+    assert out.accion == "plan"
+    assert out.mensaje == ""

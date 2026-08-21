@@ -97,3 +97,41 @@ def test_eliminar_persiste_en_disco(tmp_path):
 
     s2 = ViajesStore(path=ruta)
     assert s2.obtener(GUID) is None
+
+
+def test_ultimo_viaje_de_empleado(tmp_path):
+    store = ViajesStore(path=tmp_path / "store.json")
+
+    assert store.ultimo_viaje_de_empleado("123") is None
+    assert store.ultimo_viaje_de_empleado(None) is None
+
+    store.guardar_viaje("aaa", empleado_id="123", destino="Cancun")
+    store.guardar_viaje("bbb", empleado_id="456", destino="Panama")
+    store.guardar_viaje("ccc", empleado_id="123", destino="Colombia")
+
+    ultimo = store.ultimo_viaje_de_empleado("123")
+    assert ultimo["solicitud_id"] == "ccc"  # el mas reciente gana
+    assert ultimo["destino"] == "Colombia"
+
+    # incluye tambien los ya entregados
+    store.marcar_entregado("ccc")
+    assert store.ultimo_viaje_de_empleado("123")["solicitud_id"] == "ccc"
+
+
+def test_viajes_de_empleado_incluye_entregados(tmp_path):
+    store = ViajesStore(path=tmp_path / "store.json")
+
+    assert store.viajes_de_empleado("123") == []
+    assert store.viajes_de_empleado(None) == []
+
+    store.guardar_viaje("aaa", empleado_id="123", destino="Cancun")
+    store.guardar_viaje("bbb", empleado_id="456", destino="Panama")
+    store.guardar_viaje("ccc", empleado_id="123", destino="Colombia")
+    store.marcar_entregado("aaa")
+
+    viajes = store.viajes_de_empleado("123")
+    ids = {v["solicitud_id"] for v in viajes}
+    assert ids == {"aaa", "ccc"}  # entregados y pendientes, sin ajenos
+
+    entregado = next(v for v in viajes if v["solicitud_id"] == "aaa")
+    assert entregado["recomendaciones_entregadas"] is True
