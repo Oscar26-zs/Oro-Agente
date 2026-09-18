@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: gestion-vacaciones
+    metrics_path: /metrics
+    scrape_protocols: ["PrometheusText0.0.4"]
+    static_configs:
+      - targets: ["gestion-vacaciones:8080"]
