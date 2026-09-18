@@ -1,0 +1,63 @@
+services:
+  oro-agente:
+    image: tostar21/oro-agente:latest
+    build: .
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8001
+      - BASE_URL_VACACIONES_API=http://gestion-vacaciones:8080
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - gestion-vacaciones
+    networks:
+      - oro-net
+
+  gestion-vacaciones:
+    image: tostar21/gestion-vacaciones:latest
+    build: ../GestionVacaciones/GestionVacaciones
+    ports:
+      - "5000:8080"
+    environment:
+      - Chat__ExternalApiUrl=http://oro-agente:8001
+    volumes:
+      - ../GestionVacaciones/GestionVacaciones/GestionVacaciones.db:/app/GestionVacaciones.db
+    networks:
+      - oro-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - gestion-vacaciones
+    networks:
+      - oro-net
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - oro-net
+
+networks:
+  oro-net:
+    driver: bridge
+
+volumes:
+  grafana-data:
